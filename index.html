@@ -11,7 +11,7 @@
       padding: 0 1rem;
       color: #1a1a1a;
     }
-    #version {
+    #version, #dsql {
       font-weight: bold;
     }
   </style>
@@ -19,15 +19,22 @@
 <body>
   <h1>CDK Bootstrap Status</h1>
   <p>SSM parameter <code>/cdk-bootstrap/hnb659fds/version</code>: <span id="version">loading...</span></p>
+  <p>Aurora DSQL <code>SELECT 1</code>: <span id="dsql">loading...</span></p>
 
   <script>
     fetch("/api/")
       .then((response) => response.json())
       .then((data) => {
         document.getElementById("version").textContent = data.cdk_bootstrap_version;
+
+        const dsql = data.dsql || {};
+        document.getElementById("dsql").textContent = dsql.ok
+          ? "ok (returned " + dsql.result + ")"
+          : "failed (" + (dsql.error || "unknown") + ")";
       })
       .catch(() => {
         document.getElementById("version").textContent = "unavailable";
+        document.getElementById("dsql").textContent = "unavailable";
       });
   </script>
 </body>

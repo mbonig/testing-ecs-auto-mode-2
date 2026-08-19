@@ -1,2 +1,3 @@
 flask==3.0.3
-boto3==1.34.162
+boto3==1.43.74
+psycopg[binary]==3.3.4
