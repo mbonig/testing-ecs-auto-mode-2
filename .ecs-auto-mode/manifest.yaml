@@ -263,7 +263,7 @@ generated:
     sha256: f61d54cd5e63f33c9ceee59b15971a1e3fcd3ffb9de6591b75a05329e789e2b1
     section: pipeline
   - path: infra/src/dsql-bootstrap.ts
-    sha256: d0efeeccf0178d5b75b399d49c6a8eeda66abb70b4067d553d2b1b38cbe628b0
+    sha256: 9eac3f87045c42e52ba58e4261f07d88e93771995979b75eb3965860f800ddaa
     section: plan.resources
   - path: infra/scripts/ssm-preflight.sh
     sha256: 118bb4da5dc80505188003f11beb6e664286ee2cc26d025c0474517e4922d8d6

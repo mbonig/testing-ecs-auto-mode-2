@@ -46,15 +46,23 @@ export interface DsqlRoleGrantProps {
  * Never reverses either statement on stack deletion or update — an orphaned role
  * costs nothing, matching the cluster's own retained, deletion-protected posture.
  * Deliberately independent of the ECS task's own Fargate architecture: this Lambda
- * is ARM64, and the bundling `platform` below is pinned to match it explicitly —
+ * is X86_64, and the bundling `platform` below is pinned to match it explicitly —
  * without that, Docker bundles for whatever machine happens to run `cdk deploy`,
  * and a wheel built for the wrong architecture fails at runtime, not at synth time.
+ *
+ * X86_64 rather than ARM64 specifically because synth also runs in the GitHub
+ * Actions pipeline (the whole CDK app is synthesized even when only the service
+ * stack is deployed, so this asset still gets bundled there) — standard
+ * GitHub-hosted runners are x86_64 with no QEMU/binfmt registered for arm64, so an
+ * arm64-pinned bundle fails there with "exec format error". x86_64 works natively
+ * on CI and is what Docker Desktop on Apple Silicon emulates by default, so it
+ * bundles cleanly on both without any extra setup either way.
  */
 export class DsqlRoleGrant extends Construct {
   constructor(scope: Construct, id: string, props: DsqlRoleGrantProps) {
     super(scope, id);
 
-    const architecture = lambda.Architecture.ARM_64;
+    const architecture = lambda.Architecture.X86_64;
 
     const handler = new lambda.Function(this, 'Handler', {
       runtime: lambda.Runtime.PYTHON_3_12,
