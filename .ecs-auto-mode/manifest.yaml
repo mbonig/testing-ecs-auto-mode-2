@@ -1,0 +1,282 @@
+schemaVersion: 1
+
+app:
+  name: testing-ecs-truly-auto-mode
+  dockerfile: Dockerfile
+  buildContext: .
+
+target:
+  account: "581514672367"
+  region: us-east-1
+  ssmPrefix: /ecs-auto-mode/testing-ecs-truly-auto-mode
+  cdkQualifier: hnb659fds
+
+analysis:
+  buildValidated: true
+
+  architecture:
+    value: ARM64
+    confidence: high
+    confirmedByUser: true
+    # No --platform, no arch-specific tag, no downloaded binary — nothing in the
+    # Dockerfile pinned this. Asked in Phase 2; user confirmed ARM64.
+    evidence:
+      - file: Dockerfile
+        line: 1
+        excerpt: "FROM python:3.12-slim"
+
+  container:
+    port:
+      value: 8080
+      confidence: high
+      evidence:
+        - file: Dockerfile
+          line: 10
+          excerpt: "EXPOSE 8080"
+        - file: app.py
+          line: 153
+          excerpt: 'app.run(host="0.0.0.0", port=8080)'
+    healthCheck:
+      type:
+        value: http
+        confidence: high
+        evidence:
+          - file: app.py
+            line: 136
+            excerpt: '@app.route("/api/")'
+      path:
+        value: /api/
+        confidence: high
+        evidence:
+          - file: app.py
+            line: 136
+            excerpt: '@app.route("/api/")'
+          - file: app.py
+            line: 149
+            excerpt: 'return jsonify({"cdk_bootstrap_version": version, "dsql": check_dsql()})'
+          - file: openspec/changes/add-dsql-health-check/design.md
+            excerpt: "the ALB health check points at /api/, and this endpoint must keep returning 200"
+
+  # All four egress sources checked (HTTP clients, URL literals, third-party SDKs,
+  # runtime package installs): none found beyond the two AWS SDK clients below.
+  # pip install runs in a Dockerfile RUN layer (build-time), not at container
+  # startup. boto3.client("dsql") only generates a local SigV4 auth token (no
+  # network call); the actual TCP connection is the psycopg connect in
+  # check_dsql() (app.py:109). Both SSM and DSQL's data plane have VPC interface
+  # endpoints, so no call in this app forces NAT.
+  egress:
+    classification:
+      value: none
+      confidence: high
+      evidence:
+        - file: app.py
+          line: 20
+          excerpt: 'ssm_client = boto3.client("ssm")'
+        - file: app.py
+          line: 65
+          excerpt: 'client = boto3.client("dsql", region_name=config["region"])'
+        - file: app.py
+          line: 109
+          excerpt: 'conn = psycopg.connect(**conn_params)'
+    awsServices: [ecr, ecr-docker, logs, s3, ssm, dsql-data]
+    externalHosts: []
+
+  hostnames:
+    public:
+      - value: testing-ecs-truly-auto-mode.sandbox.defiance.ai
+        confidence: high
+        confirmedByUser: true
+        evidence:
+          - file: .ecs-auto-mode/manifest.yaml
+            excerpt: "supplied by the user; no hostname appears anywhere in the application source"
+    internal: []
+
+  datastores:
+    - kind: dsql
+      planId: dsql-cluster
+      nameFound: false   # no cluster identifier literal in code, only env var names
+      confidence: high
+      evidence:
+        - file: requirements.txt
+          line: 3
+          excerpt: "psycopg[binary]==3.3.4"
+        - file: app.py
+          line: 65
+          excerpt: 'client = boto3.client("dsql", region_name=config["region"])'
+        - file: app.py
+          line: 68
+          excerpt: "client.generate_db_connect_admin_auth_token(...) / generate_db_connect_auth_token(...)"
+        - file: app.py
+          line: 14
+          excerpt: 'DSQL_ENDPOINT_REGION = re.compile(r"\.dsql\.([a-z0-9-]+)\.on\.aws\.?$")'
+        - file: app.py
+          line: 34
+          excerpt: 'endpoint = os.environ.get("DSQL_CLUSTER_ENDPOINT")'
+      iamActions:
+        - dsql:DbConnect
+      dbUser: app_user
+      endpointEnvVar: DSQL_CLUSTER_ENDPOINT
+
+  config:
+    # DSQL_SSLROOTCERT: python:3.12-slim is Debian-based; psycopg connects with
+    # sslmode=verify-full (app.py:98). libpq's default sslrootcert path doesn't exist
+    # in this image and its "system" mode needs a hashed-symlink directory Debian
+    # slim doesn't ship, so an explicit path is the safe choice per the skill's own
+    # guidance (references/analysis/secrets.md). Not independently verified against
+    # a live cluster in this run — see the completion report.
+    environment:
+      - name: DSQL_CLUSTER_USER
+        value: app_user
+      - name: DSQL_SSLROOTCERT
+        value: /etc/ssl/certs/ca-certificates.crt
+      - name: DSQL_DATABASE
+        value: postgres  # app.py default; no override needed
+      - name: DSQL_PORT
+        value: "5432"    # app.py default; no override needed
+    secrets: []  # DSQL: IAM token, no password. SSM read: IAM permission only, no secret.
+
+  buildContextPaths:
+    - Dockerfile
+    - requirements.txt
+    - app.py
+    - index.html
+
+plan:
+  approved: true
+  resources:
+    - id: vpc
+      action: create
+      reason: "No existing VPC supplied — 2 AZs, isolated subnets (egress: none)"
+    - id: nat-gateway
+      action: skip
+      reason: "egress.classification is none — app.py:20,65 are the only outbound calls, both VPC-internal"
+    - id: vpc-endpoints
+      action: create
+      parameters:
+        services: [ecr, ecr-docker, logs, s3, ssm, dsql-data]
+      reason: "egress.classification is none; dsql-data resolved off the created cluster's VpcEndpointServiceName attribute at synth time, not hardcoded"
+    - id: cluster
+      action: create
+      reason: "No existing ECS cluster supplied"
+    - id: ecr-repository
+      action: create
+      reason: "No existing repository supplied; 20-image lifecycle policy"
+    - id: load-balancer
+      action: create
+      parameters:
+        scheme: internet-facing
+      reason: "Container accepts inbound HTTP on 8080; public hostname requested"
+    - id: target-group
+      action: create
+      reason: "Created in the platform stack alongside the load balancer"
+    - id: certificate
+      action: create
+      parameters:
+        hostname: testing-ecs-truly-auto-mode.sandbox.defiance.ai
+      reason: "Public hostname requested; hosted-zone is adopt, so DNS validation has a zone to write to"
+    - id: hosted-zone
+      action: adopt
+      identifiers:
+        hostedZoneId: Z096698834X7NH86OV1OR
+        zoneName: sandbox.defiance.ai
+      validated: true
+      reason: "Public zone found in the account (aws route53 list-hosted-zones); requested hostname is a subdomain of it"
+    - id: dns-record
+      action: create
+      reason: "A record for testing-ecs-truly-auto-mode.sandbox.defiance.ai in the adopted zone, pointing at the ALB"
+    - id: task-security-group
+      action: create
+      reason: "Allows inbound on 8080 from the ALB security group only"
+    - id: alb-security-group
+      action: create
+      reason: "Allows inbound 443 from the internet (internet-facing, public hostname)"
+    - id: task-role
+      action: create
+      parameters:
+        iamActions:
+          - "ssm:GetParameter on arn:aws:ssm:us-east-1:581514672367:parameter/cdk-bootstrap/hnb659fds/version"
+          - "dsql:DbConnect on the created dsql-cluster (role app_user)"
+      reason: "Scoped to exactly the two calls in app.py — no wildcards"
+    - id: execution-role
+      action: create
+      reason: "AmazonECSTaskExecutionRolePolicy only — analysis.config.secrets is empty, so no secret-read grant needed"
+    - id: log-group
+      action: create
+      reason: "Explicit retention period, not the CDK default of infinite"
+    - id: dsql-cluster
+      action: create
+      reason: "aws dsql list-clusters --region us-east-1 returned 0 clusters — nothing to adopt"
+    - id: github-oidc-provider
+      action: adopt
+      identifiers:
+        providerArn: arn:aws:iam::581514672367:oidc-provider/token.actions.githubusercontent.com
+      validated: true
+      reason: "Found via aws iam list-open-id-connect-providers; ClientIDList includes sts.amazonaws.com"
+    - id: github-oidc-role
+      action: create
+      reason: "Trust policy scoped to repo:mbonig/testing-ecs-auto-mode-2:* (and the EMU form)"
+    - id: dsql-role-grant
+      action: create
+      reason: >-
+        User-requested addition beyond the standard catalog: a Lambda-backed custom
+        resource in the platform stack that runs CREATE ROLE app_user + AWS IAM GRANT
+        inside the cluster on deploy, so the manual post-deploy SQL step isn't needed.
+        Requires Docker at synth/deploy time to bundle psycopg[binary]; its execution
+        role gets dsql:DbConnectAdmin scoped to this one cluster.
+
+pipeline:
+  target: github-actions
+  branch: main
+  pathFilter:
+    - Dockerfile
+    - requirements.txt
+    - app.py
+    - index.html
+    - infra/.projenrc.ts
+    - infra/src/service-stack.ts
+  repository: mbonig/testing-ecs-auto-mode-2
+
+infra:
+  style: projen
+  cdkVersion: 2.263.0
+
+generated:
+  - path: infra/.projenrc.ts
+    sha256: 1ff7bd4453be9053ae2df2a7b4becd2b4656f2e52113c005385d40998b0ca3d5
+    section: infra
+  - path: infra/src/main.ts
+    sha256: 2c58ff255963c547b7c6bcd8218fb19dfb1182b6eba3415ccfdd84f60678b386
+    section: app, target
+  - path: infra/src/config.ts
+    sha256: 8ccd2474381fcfa4c1bafd16ec0d82e3c9d7cbfb2edae2180195b0f940bd939f
+    section: (whole manifest)
+  - path: infra/src/app-config.ts
+    sha256: b2061838c40ca5ae7796e22309d7c9665e8cb7de16066afa58a77cc70558896a
+    section: (whole manifest)
+  - path: infra/src/platform-stack.ts
+    sha256: ed25b80e8421f17ebe1e7411fc162b644a0fd0c563497653b90f7d5487b59cc4
+    section: plan.resources, analysis.egress
+  - path: infra/src/service-stack.ts
+    sha256: 61fa3d728ccba00b405616df1f9f7f542981a2d85cbefab8e4bc0931204028db
+    section: analysis.container, analysis.config, analysis.egress
+  - path: infra/src/deploy-permissions.ts
+    sha256: f61d54cd5e63f33c9ceee59b15971a1e3fcd3ffb9de6591b75a05329e789e2b1
+    section: pipeline
+  - path: infra/src/dsql-bootstrap.ts
+    sha256: d0efeeccf0178d5b75b399d49c6a8eeda66abb70b4067d553d2b1b38cbe628b0
+    section: plan.resources
+  - path: infra/scripts/ssm-preflight.sh
+    sha256: 118bb4da5dc80505188003f11beb6e664286ee2cc26d025c0474517e4922d8d6
+    section: target.ssmPrefix
+  - path: infra/lambda/dsql-role-grant/index.py
+    sha256: 731182eacef94380e273c78c48e61f5a53d3ada2c39bd9d520fae1829740bf72
+    section: plan.resources
+  - path: infra/lambda/dsql-role-grant/requirements.txt
+    sha256: f0c1e2a23fc65a7b6dc8ce5cdb2e8eec894d35cb0552468f9b5df5ba5cd887f3
+    section: plan.resources
+  - path: infra/lambda/dsql-role-grant/amazon-trust-roots.pem
+    sha256: dfaa39c0350288ded35812f7b80f76c4a422b97ecc04c4ac84e325bec528b1b8
+    section: plan.resources
+  - path: .github/workflows/deploy.yml
+    sha256: d727edabfee0a89acdf03ac1d8f8975dbb7ac9e079133eb648e145ea29542308
+    section: pipeline
