@@ -171,6 +171,27 @@ export class PlatformStack extends cdk.Stack {
         actions: ref.store.actions,
         resourceArns: [ref.clusterArn],
       })),
+      // HAND-ADDED: app.py reads one specific SSM parameter directly (the CDK
+      // bootstrap version, app.py:11,15) — a plain SSM read that isn't any of
+      // config.ts's modeled datastore kinds (dynamodb/s3/sqs/sns/dsql), so there was
+      // no field to carry it through app-config.ts. Granted here as a one-off rather
+      // than inventing a new datastore kind for a single call site. See
+      // .ecs-auto-mode/manifest.yaml's task-role plan entry, which named this grant
+      // in the plan but never actually got it into the generated config.
+      {
+        id: 'cdk-bootstrap-version',
+        actions: ['ssm:GetParameter'],
+        resourceArns: [
+          cdk.Arn.format(
+            {
+              service: 'ssm',
+              resource: 'parameter',
+              resourceName: `cdk-bootstrap/${this.config.cdkQualifier}/version`,
+            },
+            this,
+          ),
+        ],
+      },
     ]);
 
     const targetGroup = config.loadBalancer

@@ -254,7 +254,7 @@ generated:
     sha256: b2061838c40ca5ae7796e22309d7c9665e8cb7de16066afa58a77cc70558896a
     section: (whole manifest)
   - path: infra/src/platform-stack.ts
-    sha256: ed25b80e8421f17ebe1e7411fc162b644a0fd0c563497653b90f7d5487b59cc4
+    sha256: b4eeb44c47c7b3dc24f2b4f63c2480f93b479228822f9871b749bc1aed32f27b
     section: plan.resources, analysis.egress
   - path: infra/src/service-stack.ts
     sha256: 61fa3d728ccba00b405616df1f9f7f542981a2d85cbefab8e4bc0931204028db
